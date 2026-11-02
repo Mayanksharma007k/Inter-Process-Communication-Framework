@@ -1,0 +1,12 @@
+# Binaries & Object Files
+*.o
+backend/omni_ipc_engine
+/tmp/omni_*
+
+# Node & Frontend Build
+frontend/node_modules/
+frontend/dist/omni-ipc.zip
+backend/omni-ipc.zip
+
+# macOS metadata
+.DS_Store

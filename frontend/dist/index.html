@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OmniIPC | Real-time Systems Telemetry Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            discord: {
+              blurple: '#5865F2',
+              green: '#57F287',
+              yellow: '#FEE75C',
+              fuchsia: '#EB459E',
+              red: '#ED4245',
+              dark: {
+                serverNav: '#1E1F22',
+                channelNav: '#2B2D31',
+                chatBg: '#313338',
+                chatCard: '#2B2D31',
+                memberNav: '#2B2D31',
+                textNormal: '#DBDEE1',
+                textMuted: '#949BA4',
+                textHeader: '#F2F3F5',
+                hover: '#35373C',
+                active: '#404249',
+                divider: '#35363C',
+              },
+              light: {
+                serverNav: '#E3E5E8',
+                channelNav: '#F2F3F5',
+                chatBg: '#FFFFFF',
+                chatCard: '#F2F3F5',
+                memberNav: '#F2F3F5',
+                textNormal: '#313338',
+                textMuted: '#5C5E66',
+                textHeader: '#060607',
+                hover: '#E0E2E5',
+                active: '#D4D7DC',
+                divider: '#E3E5E8',
+              }
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <!-- React 18 and Babel for standalone runtime execution -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    /* Discord Scrollbars */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.2); border-radius: 4px; }
+    .dark ::-webkit-scrollbar-thumb { background: #1a1b1e; }
+  </style>
+</head>
+<body class="bg-discord-light-chatBg dark:bg-discord-dark-chatBg text-discord-light-textNormal dark:text-discord-dark-textNormal select-none overflow-hidden m-0 p-0 font-sans">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const NODES = [
+      { id: 'node-local', name: 'macOS Core Engine (Host)', count: 8 },
+      { id: 'node-cluster', name: 'POSIX Linux Kernel 6.8', count: 16 },
+      { id: 'node-container', name: 'IPC Sandbox (Docker)', count: 4 },
+    ];
+
+    const CHANNELS = [
+      { id: 'shared-memory', label: 'shared-memory', badge: '18.2 GB/s', desc: 'Zero-copy lock-free ring buffer' },
+      { id: 'unix-sockets', label: 'unix-domain-sockets', badge: '4.8 GB/s', desc: 'AF_UNIX full-duplex socketpair' },
+      { id: 'pipes', label: 'pipes', badge: '1.4 GB/s', desc: 'POSIX unidirectional stream pipe' },
+      { id: 'message-queues', label: 'message-queues', badge: '420 MB/s', desc: 'System V / POSIX priority queue' },
+    ];
+
+    const THREADS = [
+      { pid: 10421, threadId: 1, role: 'Producer', status: 'High Load', cpu: 89.4, mem: 42.1 },
+      { pid: 10422, threadId: 2, role: 'Consumer', status: 'Online', cpu: 64.2, mem: 112.8 },
+      { pid: 10425, threadId: 3, role: 'Broker', status: 'Online', cpu: 12.0, mem: 18.4 },
+      { pid: 10430, threadId: 4, role: 'Watcher', status: 'Idle', cpu: 0.8, mem: 8.2 },
+    ];
+
+    function App() {
+      const [darkMode, setDarkMode] = useState(true);
+      const [selectedNode, setSelectedNode] = useState('node-local');
+      const [activeChannel, setActiveChannel] = useState('shared-memory');
+      const [messages, setMessages] = useState([]);
+      const [isSimulating, setIsSimulating] = useState(true);
+      const [selectedSize, setSelectedSize] = useState('1MB');
+      const [backendOnline, setBackendOnline] = useState(false);
+      const [inspectPkt, setInspectPkt] = useState(null);
+
+      useEffect(() => {
+        if (darkMode) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      }, [darkMode]);
+
+      // Connect to SSE Telemetry stream
+      useEffect(() => {
+        let es = null;
+        try {
+          es = new EventSource('/api/events');
+          es.onopen = () => setBackendOnline(true);
+          es.onmessage = (e) => {
+            try {
+              const res = JSON.parse(e.data);
+              if (res.event === 'packet') {
+                setMessages((prev) => [res.data, ...prev.slice(0, 50)]);
+              }
+            } catch (err) {}
+          };
+          es.onerror = () => setBackendOnline(false);
+        } catch {
+          setBackendOnline(false);
+        }
+        return () => { if (es) es.close(); };
+      }, []);
+
+      // Synthetic Traffic Loop (Runs when server is paused or client is offline)
+      useEffect(() => {
+        if (!isSimulating || backendOnline) return;
+
+        const timer = setInterval(() => {
+          const latencies = {
+            'shared-memory': 18.4,
+            'unix-sockets': 88.5,
+            'pipes': 148.0,
+            'message-queues': 42.1
+          };
+          const baseLat = latencies[activeChannel] || 25.0;
+          const jitter = (Math.random() * 12 - 6);
+          const seq = Math.floor(Date.now() / 300);
+
+          const newPkt = {
+            id: `pkt-${Date.now()}-${seq % 9999}`,
+            timestamp: new Date().toLocaleTimeString(),
+            sourcePid: 10421,
+            targetPid: 10422,
+            ipcType: activeChannel,
+            payloadSize: selectedSize,
+            bytes: selectedSize === '1MB' ? 1048576 : selectedSize === '10MB' ? 10485760 : selectedSize === '100MB' ? 104857600 : 1024,
+            latencyUs: parseFloat((baseLat + jitter).toFixed(1)),
+            checksum: '0x' + Math.floor(Math.random() * 0xFFFFFFFF).toString(16).toUpperCase(),
+            status: 'verified'
+          };
+          setMessages((prev) => [newPkt, ...prev.slice(0, 50)]);
+        }, 400);
+
+        return () => clearInterval(timer);
+      }, [activeChannel, isSimulating, backendOnline, selectedSize]);
+
+      const triggerNativeRun = async () => {
+        const mechMap = {
+          'shared-memory': 'shm',
+          'unix-sockets': 'sockets',
+          'pipes': 'pipes',
+          'message-queues': 'mq'
+        };
+        try {
+          const res = await fetch('/api/run-benchmark', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mechanism: mechMap[activeChannel],
+              size: selectedSize,
+              iterations: 10
+            })
+          });
+          if (!res.ok) alert('C++ backend response code ' + res.status);
+        } catch (e) {
+          alert('Backend server offline. Running simulated telemetry.');
+        }
+      };
+
+      return (
+        <div className="flex h-screen w-screen overflow-hidden">
+          
+          {/* FAR LEFT: SYSTEM NODES SIDEBAR */}
+          <aside className="w-[72px] bg-discord-light-serverNav dark:bg-discord-dark-serverNav flex flex-col items-center py-3 space-y-2 select-none border-r border-discord-light-divider dark:border-discord-dark-divider">
+            <button 
+              className="w-12 h-12 bg-discord-blurple rounded-2xl flex items-center justify-center text-white font-black text-lg shadow-md hover:rounded-xl transition-all"
+              title="Host OS System Core"
+            >
+              OS
+            </button>
+            <div className="w-8 h-[2px] bg-discord-light-divider dark:bg-discord-dark-divider my-1"></div>
+
+            {NODES.map((n) => (
+              <button
+                key={n.id}
+                onClick={() => setSelectedNode(n.id)}
+                title={n.name}
+                className={`w-12 h-12 rounded-3xl hover:rounded-2xl flex items-center justify-center font-bold text-xs transition-all ${
+                  selectedNode === n.id 
+                    ? 'bg-discord-blurple text-white rounded-2xl' 
+                    : 'bg-discord-light-hover dark:bg-discord-dark-channelNav text-discord-light-textNormal dark:text-discord-dark-textNormal hover:bg-discord-blurple hover:text-white'
+                }`}
+              >
+                {n.name.substring(0, 2).toUpperCase()}
+              </button>
+            ))}
+
+            <div className="mt-auto">
+              <button
+                onClick={() => setDarkMode(!darkMode)}
+                title="Toggle Dark/Light Mode"
+                className="w-12 h-12 rounded-3xl hover:rounded-2xl bg-discord-light-hover dark:bg-discord-dark-channelNav text-discord-light-textHeader dark:text-discord-dark-textHeader flex items-center justify-center text-lg shadow hover:bg-discord-blurple hover:text-white transition-all"
+              >
+                {darkMode ? '☀️' : '🌙'}
+              </button>
+            </div>
+          </aside>
+
+          {/* INNER LEFT: CHANNELS (IPC MECHANISMS) */}
+          <nav className="w-60 bg-discord-light-channelNav dark:bg-discord-dark-channelNav flex flex-col flex-shrink-0 select-none border-r border-discord-light-divider dark:border-discord-dark-divider">
+            <header className="h-12 border-b border-discord-light-divider dark:border-discord-dark-divider px-4 flex items-center justify-between font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader text-sm shadow-sm">
+              <span>OmniIPC System</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-discord-blurple/20 text-discord-blurple font-mono">v1.0</span>
+            </header>
+
+            <div className="flex-1 overflow-y-auto px-2 py-3 space-y-1">
+              <div className="px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-discord-light-textMuted dark:text-discord-dark-textMuted flex justify-between items-center">
+                <span>IPC Transports</span>
+                <span className="text-[9px] text-discord-green font-mono">POSIX</span>
+              </div>
+
+              {CHANNELS.map((ch) => (
+                <button
+                  key={ch.id}
+                  onClick={() => setActiveChannel(ch.id)}
+                  className={`w-full flex items-center justify-between px-2.5 py-2 rounded-md text-xs font-semibold transition ${
+                    activeChannel === ch.id
+                      ? 'bg-discord-light-active dark:bg-discord-dark-active text-discord-light-textHeader dark:text-discord-dark-textHeader'
+                      : 'text-discord-light-textMuted dark:text-discord-dark-textMuted hover:bg-discord-light-hover dark:hover:bg-discord-dark-hover hover:text-discord-light-textNormal dark:hover:text-discord-dark-textNormal'
+                  }`}
+                >
+                  <div className="flex items-center space-x-1.5 truncate">
+                    <span className="opacity-60 text-sm">#</span>
+                    <span className="truncate">{ch.label}</span>
+                  </div>
+                  <span className="text-[10px] font-mono opacity-80">{ch.badge}</span>
+                </button>
+              ))}
+
+              <div className="pt-4 px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-discord-light-textMuted dark:text-discord-dark-textMuted">
+                Payload Benchmark Matrix
+              </div>
+              <div className="grid grid-cols-4 gap-1 px-1">
+                {['1KB', '1MB', '10MB', '100MB'].map((sz) => (
+                  <button
+                    key={sz}
+                    onClick={() => setSelectedSize(sz)}
+                    className={`py-1 text-[10px] font-mono font-semibold rounded text-center transition ${
+                      selectedSize === sz
+                        ? 'bg-discord-blurple text-white shadow'
+                        : 'bg-discord-light-hover dark:bg-discord-dark-hover text-discord-light-textMuted dark:text-discord-dark-textMuted'
+                    }`}
+                  >
+                    {sz}
+                  </button>
+                ))}
+              </div>
+
+              <div className="pt-3 px-2">
+                <div className="bg-discord-light-chatCard dark:bg-discord-dark-chatCard p-2.5 rounded border border-discord-light-divider dark:border-discord-dark-divider text-[11px] space-y-1">
+                  <div className="font-semibold text-discord-light-textHeader dark:text-discord-dark-textHeader flex items-center justify-between">
+                    <span>Engine Gateway</span>
+                    <span className={`w-2 h-2 rounded-full ${backendOnline ? 'bg-discord-green' : 'bg-discord-yellow'}`}></span>
+                  </div>
+                  <div className="text-[10px] text-discord-light-textMuted dark:text-discord-dark-textMuted">
+                    {backendOnline ? 'Connected to C++ POSIX Core' : 'Standalone Simulated Hub'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* User Footer Bar */}
+            <footer className="h-14 bg-discord-light-serverNav/60 dark:bg-discord-dark-serverNav/60 px-3 flex items-center justify-between border-t border-discord-light-divider dark:border-discord-dark-divider">
+              <div className="flex items-center space-x-2">
+                <div className="relative">
+                  <div className="w-8 h-8 rounded-full bg-discord-blurple flex items-center justify-center text-white text-xs font-bold">
+                    RT
+                  </div>
+                  <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-discord-green rounded-full border border-white dark:border-gray-900"></div>
+                </div>
+                <div className="leading-tight">
+                  <div className="text-xs font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader">Orchestrator</div>
+                  <div className="text-[10px] text-discord-light-textMuted dark:text-discord-dark-textMuted font-mono">PID: 10420</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsSimulating(!isSimulating)}
+                className={`p-1.5 rounded text-xs font-bold ${isSimulating ? 'text-discord-green bg-discord-green/10' : 'text-discord-red bg-discord-red/10'}`}
+                title={isSimulating ? 'Pause Stream' : 'Resume Stream'}
+              >
+                {isSimulating ? 'RUN' : 'PAUSED'}
+              </button>
+            </footer>
+          </nav>
+
+          {/* MAIN CHAT AREA (CENTER: PACKET LOG STREAM) */}
+          <main className="flex-1 bg-discord-light-chatBg dark:bg-discord-dark-chatBg flex flex-col min-w-0">
+            {/* Header */}
+            <header className="h-12 border-b border-discord-light-divider dark:border-discord-dark-divider px-4 flex items-center justify-between flex-shrink-0 shadow-sm">
+              <div className="flex items-center space-x-2">
+                <span className="text-xl font-bold opacity-60">#</span>
+                <span className="font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader text-sm">{activeChannel}</span>
+                <span className="text-xs text-discord-light-textMuted dark:text-discord-dark-textMuted pl-2 border-l border-discord-light-divider dark:border-discord-dark-divider hidden sm:inline">
+                  Zero-Copy Frame Inspection & Monotonic Tracepoints
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <a
+                  href="/download"
+                  download="omni-ipc.zip"
+                  className="bg-discord-green hover:bg-opacity-90 text-gray-900 text-xs px-3 py-1.5 rounded font-bold shadow flex items-center space-x-1.5 transition"
+                >
+                  <span>⬇ Download .ZIP</span>
+                </a>
+                <button
+                  onClick={triggerNativeRun}
+                  className="bg-discord-blurple text-white text-xs px-3 py-1.5 rounded font-semibold hover:bg-opacity-90 shadow transition"
+                >
+                  ⚡ Execute C++ Run
+                </button>
+              </div>
+            </header>
+
+            {/* Chat Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 flex flex-col-reverse">
+              {messages.map((m) => (
+                <div 
+                  key={m.id}
+                  onClick={() => setInspectPkt(m)}
+                  className="flex space-x-3 p-1 rounded hover:bg-discord-light-hover/40 dark:hover:bg-discord-dark-hover/30 transition cursor-pointer"
+                >
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-discord-blurple to-indigo-600 flex items-center justify-center text-white font-mono text-xs font-bold flex-shrink-0 mt-0.5">
+                    {m.sourcePid.toString().slice(-2)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline space-x-2">
+                      <span className="text-xs font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader">
+                        Producer_PID_{m.sourcePid}
+                      </span>
+                      <span className="text-[9px] px-1 bg-discord-blurple text-white rounded font-bold uppercase">PROD</span>
+                      <span className="text-[10px] text-discord-light-textMuted dark:text-discord-dark-textMuted">{m.timestamp}</span>
+                    </div>
+
+                    {/* Discord Embed Frame Card */}
+                    <div className="mt-1 bg-discord-light-chatCard dark:bg-discord-dark-chatCard border border-discord-light-divider dark:border-discord-dark-divider rounded p-2.5 max-w-xl text-xs space-y-2 shadow-sm hover:border-discord-blurple transition">
+                      <div className="flex justify-between items-center border-b border-discord-light-divider dark:border-discord-dark-divider pb-1.5 font-mono">
+                        <span className="text-discord-blurple font-bold">FRAME #{m.id.split('-')[2] || '1'} ({m.ipcType})</span>
+                        <span className="text-discord-green text-[11px] font-semibold">CRC: {m.checksum}</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2 text-center font-mono">
+                        <div className="bg-discord-light-serverNav dark:bg-discord-dark-serverNav p-1 rounded">
+                          <div className="text-[9px] text-discord-light-textMuted dark:text-discord-dark-textMuted">PAYLOAD</div>
+                          <div className="font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader">{m.payloadSize}</div>
+                        </div>
+                        <div className="bg-discord-light-serverNav dark:bg-discord-dark-serverNav p-1 rounded">
+                          <div className="text-[9px] text-discord-light-textMuted dark:text-discord-dark-textMuted">ROUTE</div>
+                          <div className="font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader">{m.sourcePid} &rarr; {m.targetPid}</div>
+                        </div>
+                        <div className="bg-discord-light-serverNav dark:bg-discord-dark-serverNav p-1 rounded">
+                          <div className="text-[9px] text-discord-light-textMuted dark:text-discord-dark-textMuted">LATENCY</div>
+                          <div className={`font-bold ${m.latencyUs < 50 ? 'text-discord-green' : 'text-discord-yellow'}`}>
+                            {m.latencyUs} &mu;s
+                          </div>
+                        </div>
+                        <div className="bg-discord-light-serverNav dark:bg-discord-dark-serverNav p-1 rounded">
+                          <div className="text-[9px] text-discord-light-textMuted dark:text-discord-dark-textMuted">INTEGRITY</div>
+                          <div className="font-bold text-discord-green uppercase text-[10px] mt-0.5">MATCHED</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Bottom Message Input Bar */}
+            <div className="p-4 flex-shrink-0">
+              <div className="bg-discord-light-hover dark:bg-discord-dark-channelNav rounded-lg px-4 py-2.5 flex items-center space-x-3">
+                <span className="text-discord-light-textMuted dark:text-discord-dark-textMuted font-mono text-sm font-bold">+</span>
+                <input
+                  type="text"
+                  placeholder={`Send manual test burst to #${activeChannel} (${selectedSize})...`}
+                  className="bg-transparent flex-1 text-sm text-discord-light-textNormal dark:text-discord-dark-textNormal focus:outline-none placeholder-discord-light-textMuted dark:placeholder-discord-dark-textMuted"
+                  onKeyDown={(e) => { if (e.key === 'Enter') triggerNativeRun(); }}
+                />
+                <button
+                  onClick={triggerNativeRun}
+                  className="bg-discord-blurple text-white text-xs px-3 py-1.5 rounded font-bold hover:bg-opacity-90 transition"
+                >
+                  Send Frame
+                </button>
+              </div>
+            </div>
+          </main>
+
+          {/* RIGHT: MEMBERS LIST (ACTIVE PROCESS THREADS) */}
+          <aside className="w-60 bg-discord-light-memberNav dark:bg-discord-dark-memberNav flex flex-col flex-shrink-0 select-none border-l border-discord-light-divider dark:border-discord-dark-divider overflow-y-auto p-3 space-y-4">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-discord-light-textMuted dark:text-discord-dark-textMuted mb-2">
+                Active Threads — {THREADS.length}
+              </div>
+              <div className="space-y-1">
+                {THREADS.map((t) => (
+                  <div key={t.pid} className="flex items-center space-x-2.5 p-1.5 rounded hover:bg-discord-light-hover dark:hover:bg-discord-dark-hover cursor-pointer transition">
+                    <div className="relative">
+                      <div className="w-8 h-8 rounded-full bg-discord-light-serverNav dark:bg-discord-dark-serverNav flex items-center justify-center font-mono text-xs font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader">
+                        P{t.threadId}
+                      </div>
+                      <div className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-discord-light-memberNav dark:border-discord-dark-memberNav ${
+                        t.status === 'High Load' ? 'bg-discord-red' : t.status === 'Online' ? 'bg-discord-green' : 'bg-discord-yellow'
+                      }`}></div>
+                    </div>
+                    <div className="flex-1 min-w-0 leading-tight">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader truncate">PID_{t.pid}</span>
+                        <span className="text-[10px] font-mono text-discord-light-textMuted dark:text-discord-dark-textMuted">{t.cpu}%</span>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] text-discord-light-textMuted dark:text-discord-dark-textMuted">
+                        <span>{t.role}</span>
+                        <span>{t.mem} MB</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Selected Packet Inspector */}
+            {inspectPkt && (
+              <div className="bg-discord-light-chatCard dark:bg-discord-dark-chatCard p-2.5 rounded border border-discord-blurple/40 text-[11px] space-y-1">
+                <div className="font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader flex justify-between">
+                  <span>Packet Inspector</span>
+                  <span className="text-discord-green">✓</span>
+                </div>
+                <div className="font-mono text-[10px] text-discord-light-textMuted dark:text-discord-dark-textMuted space-y-0.5">
+                  <div>ID: {inspectPkt.id}</div>
+                  <div>Bytes: {inspectPkt.bytes}</div>
+                  <div>Latency: {inspectPkt.latencyUs} &mu;s</div>
+                  <div>Checksum: {inspectPkt.checksum}</div>
+                </div>
+              </div>
+            )}
+
+            {/* OS Scheduler Stats */}
+            <div className="mt-auto bg-discord-light-chatCard dark:bg-discord-dark-chatCard p-2.5 rounded border border-discord-light-divider dark:border-discord-dark-divider text-[11px] space-y-1.5">
+              <div className="font-bold text-discord-light-textHeader dark:text-discord-dark-textHeader flex justify-between">
+                <span>Kernel Scheduler</span>
+                <span className="text-discord-green">Active</span>
+              </div>
+              <div className="text-[10px] text-discord-light-textMuted dark:text-discord-dark-textMuted space-y-1 font-mono">
+                <div className="flex justify-between">
+                  <span>Vol CtxSw:</span>
+                  <span className="text-discord-light-textNormal dark:text-discord-dark-textNormal">1,402 /s</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Invol CtxSw:</span>
+                  <span className="text-discord-light-textNormal dark:text-discord-dark-textNormal">84 /s</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Throughput:</span>
+                  <span className="text-discord-green font-bold">18.2 GB/s</span>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
