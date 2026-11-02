@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  omni-ipc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omni_ipc_service
+    ports:
+      - "8080:8080"
+    ipc: host  # Grants host-level POSIX shared memory and semaphores
+    environment:
+      - PORT=8080
+    restart: unless-stopped
